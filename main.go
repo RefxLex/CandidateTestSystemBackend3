@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/go-chi/docgen"
 	"github.com/go-chi/render"
 )
@@ -20,6 +21,16 @@ var routes = flag.Bool("routes", false, "Generate router documentation")
 
 func main() {
 	r := chi.NewRouter()
+
+	// Basic CORS
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://*", "http://*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
@@ -40,16 +51,17 @@ func main() {
 	})
 
 	r.Route("/api/topic", func(r chi.Router) {
+		r.Get("/", GetAllTopics)
+		r.Post("/", CreateTopic)
 		r.Route("/{topicID}", func(r chi.Router) {
 			r.Use(TopicCtx)
 			r.Get("/", GetTopic)
-			//r.Put("/", UpdateArticle)
-			//r.Delete("/", DeleteArticle)
+			r.Put("/", UpdateTopic)
+			r.Delete("/", DeleteTopic)
 		})
 	})
 
 	if *routes {
-		// fmt.Println(docgen.JSONRoutesDoc(r))
 		fmt.Println(docgen.MarkdownRoutesDoc(r, docgen.MarkdownOpts{
 			ProjectPath: "github.com/go-chi/chi/v5",
 			Intro:       "Welcome to the chi/_examples/rest generated docs.",
@@ -60,9 +72,6 @@ func main() {
 	http.ListenAndServe(":8083", r)
 }
 
-// TopicCtx middleware is used to load an Topic object from
-// the URL parameters passed through as the request. In case
-// the Topic could not be found, we stop here and return a 404.
 func TopicCtx(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var topic *types.Topic
@@ -92,50 +101,81 @@ func TopicCtx(next http.Handler) http.Handler {
 	})
 }
 
-// GetTopic returns the specific Topic. You'll notice it just
-// fetches the Topic right off the context, as its understood that
-// if we made it this far, the Topic must be on the context. In case
-// its not due to a bug, then it will panic, and our Recoverer will save us.
 func GetTopic(w http.ResponseWriter, r *http.Request) {
-	// Assume if we've reach this far, we can access the topic
-	// context because this handler is a child of the TopicCtx
-	// middleware. The worst case, the recoverer middleware will save us.
 	topic := r.Context().Value("topic").(*types.Topic)
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(*topic)
 }
 
-// UpdateArticle updates an existing Article in our persistent store.
-// func UpdateArticle(w http.ResponseWriter, r *http.Request) {
-// 	article := r.Context().Value("article").(*Article)
+func GetAllTopics(w http.ResponseWriter, r *http.Request) {
+	topics, err := topic_service.GetAllTopics()
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(err.Error()))
+		return
+	} else {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(topics)
+	}
+}
 
-// 	data := &ArticleRequest{Article: article}
-// 	if err := render.Bind(r, data); err != nil {
-// 		render.Render(w, r, ErrInvalidRequest(err))
-// 		return
-// 	}
-// 	article = data.Article
-// 	dbUpdateArticle(article.ID, article)
+func CreateTopic(w http.ResponseWriter, r *http.Request) {
+	// decode body
+	var body types.Topic
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
 
-// 	render.Render(w, r, NewArticleResponse(article))
-// }
+	// create topic
+	createdTopic, err := topic_service.CreateTopic(&body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
 
-// DeleteArticle removes an existing Article from our persistent store.
-// func DeleteArticle(w http.ResponseWriter, r *http.Request) {
-// 	var err error
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(*createdTopic)
+}
 
-// 	// Assume if we've reach this far, we can access the article
-// 	// context because this handler is a child of the ArticleCtx
-// 	// middleware. The worst case, the recoverer middleware will save us.
-// 	article := r.Context().Value("article").(*Article)
+func UpdateTopic(w http.ResponseWriter, r *http.Request) {
+	// check if topic exists
+	oldTopic := r.Context().Value("topic").(*types.Topic)
 
-// 	article, err = dbRemoveArticle(article.ID)
-// 	if err != nil {
-// 		render.Render(w, r, ErrInvalidRequest(err))
-// 		return
-// 	}
+	// decode body
+	var body types.Topic
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
 
-// 	render.Render(w, r, NewArticleResponse(article))
-// }
+	// update topic
+	newTopic, err := topic_service.UpdateTopic(oldTopic.Id, &body)
+
+	// return updated topic
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(*newTopic)
+}
+
+func DeleteTopic(w http.ResponseWriter, r *http.Request) {
+	topic := r.Context().Value("topic").(*types.Topic)
+
+	err := topic_service.DeleteTopic(topic.Id)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
